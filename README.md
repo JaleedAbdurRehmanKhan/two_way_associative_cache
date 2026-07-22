@@ -1,78 +1,133 @@
-# Reports – 2-Way Set-Associative Cache
+# 2-Way Set-Associative Cache — Verilog HDL
 
-This folder contains the technical report and its generator script for the **RTL Lab Week 4** project: a 2-Way Set-Associative Cache implemented in Verilog HDL.
+A synthesisable 2-Way Set-Associative Cache implemented in Verilog HDL as part of RTL Lab Week 4.  
+The design covers the full pipeline from address decoding to LRU-based eviction and data output.
 
 ---
 
-## Folder Contents
+## Architecture Overview
 
-| File | Description |
+The cache accepts a **7-bit address** split into three fields:
+
+```
+ [6:4]  Tag          (3 bits)
+ [3:2]  Index        (2 bits → selects 1 of 4 sets)
+ [1:0]  Block Offset (2 bits)
+```
+
+Each of the 4 sets holds **2 ways**, giving 8 total cache lines.  
+Each cache line stores: `Valid bit | 3-bit Tag | 32-bit Data`.
+
+```
+Address [6:0]
+    │
+    ▼
+┌─────────────────────┐
+│   address_separator │  → tag [2:0], index [1:0], block_offset [1:0]
+└─────────────────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+┌────────┐ ┌────────┐
+│ Way 0  │ │ Way 1  │   ← cache_way (4×32-bit RAM per way)
+│V|Tag|D │ │V|Tag|D │
+└────┬───┘ └───┬────┘
+     │         │
+     ▼         ▼
+┌───────────────────┐
+│   hit_miss_logic  │   → way0_hit, way1_hit, hit, miss
+└────────┬──────────┘
+         │
+┌────────▼──────────┐
+│ cache_controller  │   → way0_we, way1_we, way_sel (LRU logic)
+└────────┬──────────┘
+         │
+    ┌────▼────┐
+    │   MUX   │         → data_out [31:0]
+    └─────────┘
+```
+
+---
+
+## Modules
+
+| File | Module | Role |
+|---|---|---|
+| `address_separator.v` | `address_separator` | Slices the 7-bit address into Tag, Index, and Block Offset using continuous assignments |
+| `cache_way.v` | `cache_way` | Single cache way — 4-entry arrays for valid, tag, and data; synchronous write, asynchronous read |
+| `hit_miss_logic.v` | `hit_miss_logic` | Combinational comparators: asserts `hit` if either way's tag matches and its valid bit is set |
+| `cache_controller.v` | `cache_controller` | Write-enable decision logic and 1-bit LRU register array; handles hit-update, empty-fill, and eviction |
+| `cache_top.v` | `cache_top` | Structural top module wiring all sub-modules and the output data MUX |
+
+---
+
+## Replacement Policy — 1-bit LRU
+
+Each set has one LRU bit:
+
+| LRU bit | Meaning |
 |---|---|
-| `generate_report.py` | Python script that reads all Verilog source files and produces the Word report |
-| `cache_report.docx` | Generated Word report (re-run the script to regenerate) |
+| `0` | Way 0 is oldest → evict Way 0 on next conflict |
+| `1` | Way 1 is oldest → evict Way 1 on next conflict |
+
+The bit is updated **synchronously on every hit or write**:
+- Touch Way 0 → LRU = `1` (Way 1 becomes oldest)
+- Touch Way 1 → LRU = `0` (Way 0 becomes oldest)
 
 ---
 
-## Report Structure
+## Write Scenarios (cache_controller)
 
-The generated `cache_report.docx` follows this heading hierarchy (TOC-compatible):
+| Scenario | Condition | Action |
+|---|---|---|
+| A | Write hit on Way 0 | Update Way 0 |
+| B | Write hit on Way 1 | Update Way 1 |
+| C | Miss, Way 0 invalid | Fill Way 0 |
+| D | Miss, Way 1 invalid | Fill Way 1 |
+| E | Miss, both valid | Evict LRU way and write |
+
+---
+
+## Simulation — Testbench
+
+`tb_cache.v` drives the design through a linear sequence of 7 tests:
+
+| Test | Operation | Expected Result |
+|---|---|---|
+| 1 | Read before any write | **MISS** (all valid bits = 0) |
+| 2 | Write Tag `001` → Index `00` | Fills Way 0 |
+| 3 | Read Tag `001` → Index `00` | **HIT** on Way 0, data = `AAAA1111` |
+| 4 | Write Tag `010` → Index `00` | Fills Way 1 (LRU points to Way 1) |
+| 5 | Read Tag `010` → Index `00` | **HIT** on Way 1, data = `BBBB2222` |
+| 6 | Write Tag `011` → Index `00` | Both ways full → **LRU evicts Way 0** |
+| 7a | Read old Tag `001` | **MISS** (evicted) |
+| 7b | Read new Tag `011` | **HIT**, data = `CCCC3333` |
+
+Clock period: **10 ns**. Results verified via `$display` in the Tcl console.
+
+---
+
+## File Structure
 
 ```
-Title       →  2-Way Set-Associative Cache
-TOC         →  Table of Contents (update field in Word)
-Heading 1   →  1. Task
-Heading 1   →  2. Description
-  Heading 2 →    File Structure
-Heading 1   →  3. Design Files
-  Heading 3 →    address_separator.v
-  Heading 3 →    cache_way.v
-  Heading 3 →    hit_miss_logic.v
-  Heading 3 →    cache_controller.v
-  Heading 3 →    cache_top.v
-Heading 1   →  4. Testbench
-  Heading 3 →    tb_cache.v
-Heading 1   →  5. Waveform          ← placeholder
-Heading 1   →  6. Tcl Console       ← placeholder
-Heading 1   →  7. Schematic         ← placeholder
+two_way_set_associative_cache/
+├── two_way_set_associative_cache.srcs/
+│   ├── sources_1/new/
+│   │   ├── address_separator.v
+│   │   ├── cache_way.v
+│   │   ├── hit_miss_logic.v
+│   │   ├── cache_controller.v
+│   │   └── cache_top.v
+│   └── sim_1/new/
+│       └── tb_cache.v
+└── reports/
+    ├── generate_report.py    ← generates cache_report.docx
+    └── cache_report.docx
 ```
 
 ---
 
-## How to Regenerate the Report
+## Reference
 
-Requires Python and the `python-docx` library.
-
-```bash
-# Install dependency (one-time)
-pip install python-docx
-
-# Run from this folder
-python generate_report.py
-```
-
-The script reads source files directly from the Vivado project paths:
-
-- **Sources:** `..\two_way_set_associative_cache.srcs\sources_1\new\`
-- **Simulation:** `..\two_way_set_associative_cache.srcs\sim_1\new\`
-
----
-
-## Updating the TOC in Word
-
-The report embeds a live Word TOC field covering Heading 1–3.
-
-1. Open `cache_report.docx` in Microsoft Word
-2. Right-click the Table of Contents placeholder
-3. Select **Update Field → Update entire table**
-
----
-
-## Completing the Placeholders
-
-Three sections are left as placeholders to be filled manually in Word:
-
-| Section | What to insert |
-|---|---|
-| **5. Waveform** | Vivado simulation waveform screenshots |
-| **6. Tcl Console** | Tcl console output showing `$display` results |
-| **7. Schematic** | RTL elaborated design schematics from Vivado |
+Architecture based on the MIT 6.004 2-Way Set-Associative Cache diagram:  
+https://people.csail.mit.edu/devadas/6.004/Lectures/lect18/sld013.htm
